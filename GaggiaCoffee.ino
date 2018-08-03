@@ -28,7 +28,7 @@ int ssrVCC = 30;
 int ssrGND = 32;
 
 // firmware version
-float ver = 0.10;
+float ver = 0.11;
 
 // custom symbols
 uint8_t pv[8] = {24,24,16,16,5,5,5,2};
@@ -44,13 +44,14 @@ MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
 long splashTime = 3000;
 long tcPollInt = 1000;
 long tcLastPoll = 0;
-int pidWindowSize = 5000;
+int pidWindowSize = 2000;
 unsigned long pidWindowStart;
 
 // rotary encoder variables
 volatile byte add = 0;
 volatile byte sub = 0;
-volatile byte setting = 0;
+int setting = 0;
+unsigned long push = 0;
 
 // setup rotary encoder
 Rotary rotary = Rotary(rotDT, rotCLK);
@@ -59,10 +60,11 @@ Rotary rotary = Rotary(rotDT, rotCLK);
 int brewSP = 1;
 int steamSP = 8;
 double proValue, setpoint, heaterOut;
-double Kp=10, Ki=50, Kd=30; //https://www.home-barista.com/espresso-machines/add-pid-to-gaggia-classic-worth-it-t27206-40.html
+double Kp=300, Ki=10, Kd=2250;
+unsigned long serialTime; //this will help us know when to talk with processing
 
 // specify PID links and initial tuning parameters
-PID heaterPID(&proValue, &heaterOut, &setpoint, Kp, Ki, Kd, DIRECT);
+PID boilerPID(&proValue, &heaterOut, &setpoint, Kp, Ki, Kd, DIRECT);
 
 // steam/brew state variable
 int brew = 0;
@@ -84,10 +86,10 @@ void setup()
   splash(lcd, ver, splashTime);
   
   // start up PID
-  heaterPID.SetOutputLimits(0, pidWindowSize);
-  heaterPID.SetMode(AUTOMATIC);
+  boilerPID.SetOutputLimits(0, pidWindowSize);
+  boilerPID.SetMode(AUTOMATIC);
   
-  Serial.begin(57600);
+  Serial.begin(9600);
     
   // configure thermocouple pins 
   pinMode(thermoVCC, OUTPUT); digitalWrite(thermoVCC, HIGH);
@@ -108,7 +110,6 @@ void setup()
   
   attachInterrupt(0, rotate, CHANGE);
   attachInterrupt(1, rotate, CHANGE);
-  attachInterrupt(5, button, FALLING);
 
   lcd.createChar(0, pv);
   lcd.createChar(1, sp);
@@ -147,7 +148,13 @@ void loop()
   unsigned long current = millis();
 
   // take care of PID control
-  heaterPID.Compute();
+  if (proValue < 150.0) {
+    boilerPID.Compute();
+  } else {
+    boilerPID.SetMode(MANUAL);
+    heaterOut = 0;
+    
+  }
 
   if (millis() - pidWindowStart > pidWindowSize)
   { //time to shift the Relay Window
@@ -161,6 +168,15 @@ void loop()
   }
   
   progress(lcd,0,3,20,heaterOut/pidWindowSize);
+  
+  if (not(digitalRead(rotSW)) && millis() - push > 2000 && millis() - push != millis()) {
+    setting++;
+    push = 0;
+  } else if (not(digitalRead(rotSW)) && push == 0) {
+    push = millis(); 
+  } else if (digitalRead(rotSW)) {
+    push = 0;
+  }
   
   // handle changes to respective setpoints
   if (setting == 1) {
@@ -224,6 +240,14 @@ void loop()
     lcd.print(" -----");
     
     tcLastPoll = current;
-  }  
+  }
+ 
+  //send-receive with processing if it's time
+  if(millis()>serialTime)
+  {
+    SerialReceive();
+    SerialSend();
+    serialTime+=500;
+  } 
   
 }
